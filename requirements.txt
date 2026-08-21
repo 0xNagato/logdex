@@ -1,0 +1,3 @@
+# index + show need nothing (Python 3 stdlib only).
+# embed + search need:
+fastembed
