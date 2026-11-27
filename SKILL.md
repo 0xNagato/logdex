@@ -38,17 +38,20 @@ Then read only the slice, via your editor/agent's read-with-offset, or:
 python3 logdex.py show <manifest> <chunk_id>
 ```
 
-**2. Vectors (optional, for conceptual queries).** Embeds each chunk's *summary*
-— never its bulk text — into Qdrant.
+**2. Vectors (optional, for conceptual queries).** Embeds each chunk's **real
+text** into Qdrant twice: a dense MiniLM vector (meaning) and a BM25 **sparse**
+vector (exact terms), fused at query time with Reciprocal Rank Fusion. The
+payload stays the manifest record, so `search` still returns `path:start-end`
+pointers.
 
 ```bash
 python3 logdex.py embed  <manifest> [--collection logdex]
 python3 logdex.py search "<question>" [--collection logdex] [-k 8]
 ```
 
-Measured: 1381 chunk-summaries embedded in 15 s; a query for "ran out of balance,
-could not complete the second leg" ranked first a chunk containing 225
-`"reason":"balance"` lines, against 0 in a control chunk.
+Why hybrid: dense MiniLM alone scored near-exact keyword matches barely above
+generic prose. BM25 makes an exact term always count, so recall no longer
+depends on having anticipated the phrasing.
 
 ## When to use which
 
@@ -58,9 +61,9 @@ could not complete the second leg" ranked first a chunk containing 225
   starvation" → **`search`**.
 
 Vectors earn their keep across a *heterogeneous* corpus (many files, mixed
-content). Within one homogeneous log every chunk looks alike, so absolute cosine
-scores run low (~0.25) — judge by **ranking**, not by score, and confirm the hit
-by reading the slice.
+content). Scores are fused rank scores, not cosine similarity — judge by
+**ranking** and the gap to the next hit, never by the absolute number, and
+confirm the hit by reading the slice.
 
 ## Where manifests live
 
@@ -84,11 +87,19 @@ Parquet column data) carry no free text — index the query output, not the part
 
 ## Conventions it keeps
 
-Vector name `fast-all-minilm-l6-v2`, 384-dim, cosine, model
-`sentence-transformers/all-MiniLM-L6-v2` via **fastembed** — deliberately the
-same shape [`mcp-server-qdrant`](https://github.com/qdrant/mcp-server-qdrant)
-writes, so anything indexed here is format-compatible with a Qdrant MCP server.
-Do not change the vector name without re-indexing every collection.
+Dense vector `fast-all-minilm-l6-v2`, 384-dim, cosine, model
+`sentence-transformers/all-MiniLM-L6-v2`; sparse vector `bm25`, model
+`Qdrant/bm25`, `modifier: idf`; both via **fastembed**. The dense name is
+deliberately the shape [`mcp-server-qdrant`](https://github.com/qdrant/mcp-server-qdrant)
+writes, and each point also carries the `document` and `metadata` fields that
+server reads, so anything indexed here is readable by a Qdrant MCP server. Do
+not change the vector names without re-indexing every collection.
+
+A collection made by the summary-only version has no `bm25` field and is never
+recreated for you: search on it falls back to dense only, and `embed` into it
+fails (`Not existing vector name error: bm25`). Delete it and re-embed. Points
+another tool stored dense-only (e.g. through `mcp-server-qdrant`) get a BM25
+vector from their `document` text with `logdex.py fill-sparse --collection <name>`.
 
 Qdrant URL/key come from `QDRANT_URL` (default `http://localhost:6333`) and
 `QDRANT_API_KEY`, falling back to `/etc/qdrant/config.yaml`.
