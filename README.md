@@ -42,6 +42,10 @@ Why hybrid: a dense vector alone scored near-exact keyword matches barely above
 generic text. BM25 makes an exact term always count, so recall no longer depends
 on guessing the phrasing.
 
+Point ids come from each file's full path and chunk number, so same-named files
+never collide, and re-embedding a file replaces its chunks (ones it no longer has
+are deleted). `python3 logdex.py prune-missing` drops chunks of deleted files.
+
 ## When to use which
 
 - **Structural / exact** (a timestamp, event name, id, error string) → **grep the
@@ -70,6 +74,16 @@ field, and logdex never recreates an existing collection. Searching it still
 works (dense only), but `embed` into it fails with `Not existing vector name
 error: bm25`. Delete it (`curl -X DELETE $QDRANT_URL/collections/logdex`) and
 re-embed your manifests.
+
+## Test
+
+```bash
+python3 test_point_ids.py    # needs fastembed and a running Qdrant
+```
+
+Runs against a throwaway collection it deletes afterwards: two same-named files
+keep all their chunks, re-embedding adds no duplicates, a shrunk file keeps only
+its current chunks, and `prune-missing` removes a deleted file's chunks only.
 
 ## Using it as an agent skill
 

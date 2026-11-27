@@ -22,6 +22,7 @@ Usage:
     logdex.py embed  <manifest.logdex.jsonl> [--collection logdex]
     logdex.py search "<query>" [--collection logdex] [-k 8]
     logdex.py show   <manifest.logdex.jsonl> <chunk_id>
+    logdex.py prune-missing [--collection logdex]
 
 Env:
     QDRANT_URL      (default http://localhost:6333)
@@ -324,6 +325,48 @@ def point_id(chunk_id):
     return "%s-%s-%s-%s-%s" % (h[:8], h[8:12], h[12:16], h[16:20], h[20:32])
 
 
+def chunk_point_id(rec):
+    """Keyed on the full path: chunk ids alone repeat across files that share a name (SKILL.md, README.md)."""
+    return point_id("%s|%s" % (rec["path"], rec["chunk_id"]))
+
+
+def scroll_points(collection, flt):
+    points, offset = [], None
+    while True:
+        body = {"limit": 1000, "with_payload": ["path"], "filter": flt}
+        if offset is not None:
+            body["offset"] = offset
+        res = qreq("POST", "/collections/%s/points/scroll" % collection, body).get("result", {})
+        points += res.get("points", [])
+        offset = res.get("next_page_offset")
+        if offset is None:
+            return points
+
+
+def delete_points(collection, ids):
+    for i in range(0, len(ids), 1000):
+        qreq("POST", "/collections/%s/points/delete?wait=true" % collection, {"points": ids[i:i + 1000]})
+
+
+def prune_stale(collection, path, keep):
+    """Delete the file's points the latest embed did not write: older ids, and chunks past a shrunk end."""
+    stale = [p["id"] for p in scroll_points(collection, {"must": [{"key": "path", "match": {"value": path}}]})
+             if p["id"] not in keep]
+    delete_points(collection, stale)
+    return len(stale)
+
+
+def prune_missing(collection):
+    """Delete points whose source file no longer exists; stored memories without a path stay."""
+    gone = {}
+    for p in scroll_points(collection, {"must_not": [{"is_empty": {"key": "path"}}]}):
+        path = (p.get("payload") or {}).get("path")
+        if path and not os.path.exists(path):
+            gone.setdefault(path, []).append(p["id"])
+    delete_points(collection, [i for ids in gone.values() for i in ids])
+    return sum(len(v) for v in gone.values()), len(gone)
+
+
 def slice_text(rec):
     """Read the chunk's real bytes from its source; fall back to the summary."""
     try:
@@ -344,6 +387,7 @@ def embed_manifest(manifest, collection):
     dense = load_embedder()
     sparse = load_sparse()
     done = 0
+    keep = set()
     for i in range(0, len(records), UPSERT_BATCH):
         batch = records[i:i + UPSERT_BATCH]
         raws = [slice_text(r) for r in batch]
@@ -359,8 +403,9 @@ def embed_manifest(manifest, collection):
         for r, raw, dv, sv in zip(batch, raws, dvecs, svecs):
             payload = {**r, **mcp_fields(r, raw)}
             payload["source"] = "logdex-hybrid"
+            keep.add(chunk_point_id(r))
             points.append({
-                "id": point_id(r["chunk_id"]),
+                "id": chunk_point_id(r),
                 "vector": {
                     VECTOR_NAME: [float(x) for x in dv],
                     SPARSE_NAME: {"indices": [int(x) for x in sv.indices],
@@ -371,6 +416,10 @@ def embed_manifest(manifest, collection):
         qreq("PUT", "/collections/%s/points?wait=true" % collection, {"points": points})
         done += len(points)
         print("  upserted %d/%d" % (done, len(records)))
+    for path in sorted({r["path"] for r in records}):
+        n = prune_stale(collection, path, keep)
+        if n:
+            print("  pruned %d stale chunk(s) of %s" % (n, path))
     print("done. %d chunks (dense+bm25) in '%s'" % (done, collection))
 
 
@@ -479,6 +528,9 @@ def main():
     p = sub.add_parser("fill-sparse", help="add BM25 vectors to points stored without one (e.g. by mcp-server-qdrant)")
     p.add_argument("--collection", default="logdex")
 
+    p = sub.add_parser("prune-missing", help="delete points whose source file no longer exists")
+    p.add_argument("--collection", default="logdex")
+
     a = ap.parse_args()
     if a.cmd == "index":
         src = Path(a.file)
@@ -494,6 +546,9 @@ def main():
         show(Path(a.manifest), a.chunk_id)
     elif a.cmd == "fill-sparse":
         print("filled BM25 vectors on %d point(s) in '%s'" % (fill_sparse(a.collection), a.collection))
+    elif a.cmd == "prune-missing":
+        n, files = prune_missing(a.collection)
+        print("pruned %d point(s) of %d missing file(s) from '%s'" % (n, files, a.collection))
 
 
 if __name__ == "__main__":

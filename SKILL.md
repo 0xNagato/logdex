@@ -78,9 +78,16 @@ ls ./manifests/                                  # what is already indexed
 grep -l 'window_closed' ./manifests/*.logdex.jsonl   # which file saw it
 ```
 
-Re-run `index` + `embed` for a file that has grown; point ids are a stable
-sha256 of the chunk id, so re-embedding **updates in place** rather than
-duplicating. Line numbers of existing chunks stay valid for append-only logs.
+Re-run `index` + `embed` for a file that has grown or shrunk. A point id is a
+sha256 of the file's full path plus its chunk number, so files that share a name
+(`README.md`, `SKILL.md`) never overwrite each other, and re-embedding **updates
+in place**: chunks the file no longer has are deleted. Line numbers of existing
+chunks stay valid for append-only logs. For files you deleted or moved,
+`logdex.py prune-missing --collection <name>` removes their points.
+
+Collections embedded before path-keyed ids hold ids made from the file name
+alone, so same-named files overwrote each other there. Re-embed each manifest
+once (its old points are deleted as it goes), then run `prune-missing`.
 
 Nothing to embed: binary columnar stores (e.g. ClickHouse MergeTree parts,
 Parquet column data) carry no free text — index the query output, not the parts.
