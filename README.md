@@ -28,16 +28,23 @@ python3 logdex.py show big.jsonl.logdex.jsonl big.jsonl#000042   # print one chu
 
 *Measured: a 127 MB JSONL became a 1.1 MB manifest in 4.4 s.*
 
-**2. Vectors (optional, for conceptual queries).** Embeds each chunk's *summary*
-— never its bulk text — into [Qdrant](https://qdrant.tech/).
+**2. Vectors (optional, for conceptual queries).** Embeds each chunk's real text
+into [Qdrant](https://qdrant.tech/) twice: a dense MiniLM vector for meaning and a
+BM25 sparse vector for exact terms, fused at query time with Reciprocal Rank
+Fusion. The payload is still the manifest record, so a hit is a reference.
 
 ```bash
 python3 logdex.py embed  big.jsonl.logdex.jsonl
 python3 logdex.py search "ran out of balance mid-trade" -k 8
 ```
 
-*Measured: 1381 chunk-summaries embedded in 15 s; a natural-language query ranked
-first the chunk with 225 matching lines, against 0 in a control chunk.*
+Why hybrid: a dense vector alone scored near-exact keyword matches barely above
+generic text. BM25 makes an exact term always count, so recall no longer depends
+on guessing the phrasing.
+
+Point ids come from each file's full path and chunk number, so same-named files
+never collide, and re-embedding a file replaces its chunks (ones it no longer has
+are deleted). `python3 logdex.py prune-missing` drops chunks of deleted files.
 
 ## When to use which
 
@@ -45,9 +52,9 @@ first the chunk with 225 matching lines, against 0 in a control chunk.*
   manifest**. Do not embed.
 - **Conceptual** ("where did it start behaving oddly") → **`search`**.
 
-Vectors earn their keep across a *heterogeneous* corpus. Within one homogeneous
-log every chunk looks alike, so cosine scores run low — judge by **ranking**, not
-absolute score, and confirm by reading the slice.
+Vectors earn their keep across a *heterogeneous* corpus. Search scores are fused
+rank scores, not cosine similarity — judge by **ranking** and the gap to the next
+hit, never the absolute number, and confirm by reading the slice.
 
 Full docs, conventions and gotchas: [`SKILL.md`](SKILL.md).
 
@@ -61,6 +68,22 @@ pip install fastembed        # only for embed + search
 
 Config via env: `QDRANT_URL`, `QDRANT_API_KEY` (falls back to
 `/etc/qdrant/config.yaml`).
+
+Upgrading from the summary-only version: a collection it created has no BM25
+field, and logdex never recreates an existing collection. Searching it still
+works (dense only), but `embed` into it fails with `Not existing vector name
+error: bm25`. Delete it (`curl -X DELETE $QDRANT_URL/collections/logdex`) and
+re-embed your manifests.
+
+## Test
+
+```bash
+python3 test_point_ids.py    # needs fastembed and a running Qdrant
+```
+
+Runs against a throwaway collection it deletes afterwards: two same-named files
+keep all their chunks, re-embedding adds no duplicates, a shrunk file keeps only
+its current chunks, and `prune-missing` removes a deleted file's chunks only.
 
 ## Using it as an agent skill
 

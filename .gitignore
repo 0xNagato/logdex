@@ -4,3 +4,7 @@ __pycache__/
 
 # generated manifests
 *.logdex.jsonl
+
+# test_point_ids.py output
+logs/
+test-data-tmp/
